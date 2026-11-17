@@ -20,8 +20,6 @@ import {
   History,
   X,
   Shield,
-  Lock,
-  KeyRound,
   Smartphone,
   Monitor,
   User,
@@ -42,7 +40,6 @@ import {
   DollarSign,
   ChevronDown,
   Menu,
-  LogOut,
   Maximize2,
   Minimize2,
   UserCheck,
@@ -71,6 +68,8 @@ import {
 } from '../types/pos';
 import { safeFetchJson } from '../utils/apiClient';
 import { formatRs } from '../data/defaultProducts';
+import { PWAInstallButton } from './PWAInstallButton';
+import { BeforeInstallPromptEvent } from '../hooks/usePWAInstall';
 
 export interface HomePageProps {
   products: Product[];
@@ -92,15 +91,12 @@ export interface HomePageProps {
   onOpenHistory: () => void;
   onSelectCustomer?: (customerId: string) => void;
   onSelectTransaction?: (tx: SaleTransaction) => void;
-  onLockApp: () => void;
   onOpenConnectNewQr?: () => void;
   onOpenPairThisDevice?: () => void;
   onOpenReceiptDesigner?: () => void;
   onOpenResetSystem?: () => void;
-  onLogout?: () => void;
-  authRole?: string;
-  authEmail?: string;
   shopId?: string;
+  deferredPrompt?: BeforeInstallPromptEvent | null;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({
@@ -123,15 +119,12 @@ export const HomePage: React.FC<HomePageProps> = ({
   onOpenHistory,
   onSelectCustomer,
   onSelectTransaction,
-  onLockApp,
   onOpenConnectNewQr,
   onOpenPairThisDevice,
   onOpenReceiptDesigner,
   onOpenResetSystem,
-  onLogout,
-  authRole = 'Software Owner',
-  authEmail,
   shopId = 'WM-001',
+  deferredPrompt,
 }) => {
   // Mobile sidebar state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -380,12 +373,6 @@ export const HomePage: React.FC<HomePageProps> = ({
       onClick: () => (onOpenConnectNewQr ? onOpenConnectNewQr() : onNavigate('Device Management')),
     },
     {
-      id: 'pin_lock',
-      title: 'PIN Lock',
-      icon: Lock,
-      onClick: onLockApp,
-    },
-    {
       id: 'settings',
       title: 'Settings',
       icon: Settings,
@@ -416,7 +403,6 @@ export const HomePage: React.FC<HomePageProps> = ({
     { id: 'CCTV', label: 'CCTV', icon: Camera, onClick: () => onNavigate('CCTV') },
     { id: 'Staff Management', label: 'Staff Management', icon: UserCheck, onClick: () => onNavigate('All Staff') },
     { id: 'Connect New Device', label: 'Connect New Device', icon: Smartphone, onClick: () => (onOpenConnectNewQr ? onOpenConnectNewQr() : onNavigate('Device Management')) },
-    { id: 'Mart Password', label: 'Generate Mart Password', icon: KeyRound, onClick: onLockApp },
     { id: 'Settings', label: 'Settings', icon: Settings, onClick: onOpenSettings },
     { id: 'Owner Profiles', label: 'Owner Profiles', icon: Crown, onClick: onOpenSettings },
     { id: 'Backup & Restore', label: 'Backup & Restore', icon: Database, onClick: handleDownloadBackup },
@@ -520,7 +506,6 @@ export const HomePage: React.FC<HomePageProps> = ({
         { label: 'POS Terminal Workstation', onClick: () => onNavigate('New Sale POS') },
         { label: 'CCTV IP & DVR Streams', onClick: () => onNavigate('CCTV') },
         { label: 'Connect New Device (QR)', onClick: () => (onOpenConnectNewQr ? onOpenConnectNewQr() : onNavigate('Device Management')) },
-        { label: 'Generate Mart Password', onClick: onLockApp },
       ],
     },
     {
@@ -532,7 +517,6 @@ export const HomePage: React.FC<HomePageProps> = ({
         { label: 'Mart Owner Profile (Editable)', onClick: onOpenSettings },
         { label: 'Receipt Designer (80mm/58mm)', onClick: () => (onOpenReceiptDesigner ? onOpenReceiptDesigner() : onOpenSettings()) },
         { label: 'Backup System JSON', onClick: handleDownloadBackup },
-        { label: 'Secure Logout', onClick: onLogout || (() => onNavigate('Login')) },
       ],
     },
   ];
@@ -585,8 +569,10 @@ export const HomePage: React.FC<HomePageProps> = ({
           </div>
         </div>
 
-        {/* Right: Download App + Fullscreen Button + Software Owner / User Profile Pill & Dropdown */}
+        {/* Right: Install App + Download App + Fullscreen Button + Software Owner / User Profile Pill & Dropdown */}
         <div className="flex items-center gap-2">
+          <PWAInstallButton deferredPrompt={deferredPrompt} variant="header" />
+
           {/* Download Full App Package */}
           <a
             href="/download"
@@ -596,7 +582,7 @@ export const HomePage: React.FC<HomePageProps> = ({
           >
             <Download className="w-4 h-4 text-slate-950 stroke-[2.5]" />
             <span className="hidden sm:inline">Download App</span>
-            <span className="sm:hidden font-bold">Download</span>
+            <span className="sm:hidden font-bold">ZIP</span>
           </a>
 
           {/* Fullscreen Button */}
@@ -629,7 +615,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 {currentUser?.displayName || 'Muhammad Waqas'}
               </div>
               <div className="text-[10px] text-amber-400 font-bold leading-tight">
-                {authRole}
+                {branding.storeName || 'WAQAS MART'}
               </div>
             </div>
             <ChevronDown className="w-4 h-4 text-amber-400 shrink-0" />
@@ -642,10 +628,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <p className="font-bold text-white text-sm truncate">
                   {currentUser?.displayName || 'Muhammad Waqas'}
                 </p>
-                <p className="text-[11px] text-amber-400 truncate">{currentUser?.email || authEmail || 'waqaspos.admin@gmail.com'}</p>
-                <span className="mt-1 inline-block px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                  {authRole}
-                </span>
+                <p className="text-[11px] text-amber-400 truncate">
+                  {branding.storeName || 'WAQAS MART'}
+                </p>
               </div>
 
               <button
@@ -683,20 +668,6 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <Monitor className="w-4 h-4 text-amber-400" />
                 <span>Launch POS Terminal</span>
               </button>
-
-              {onLogout && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProfileDropdownOpen(false);
-                    onLogout();
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-rose-400 hover:bg-rose-950/60 font-bold border-t border-slate-800 mt-1 pt-2 cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4" />
-                  <span>Secure Logout</span>
-                </button>
-              )}
             </div>
           )}
         </div>

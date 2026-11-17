@@ -86,7 +86,6 @@ interface SalePosPageProps {
   onOpenAddProduct: () => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
-  onLockApp: () => void;
   onNavigate: (page: string) => void;
   onViewReceipt?: (tx: SaleTransaction) => void;
   onDeleteTransaction?: (invoiceNumber: string) => void;
@@ -195,7 +194,6 @@ const SalePosPageInternal: React.FC<SalePosPageProps> = ({
   onOpenAddProduct,
   onOpenHistory,
   onOpenSettings,
-  onLockApp,
   onNavigate,
   onViewReceipt,
   onDeleteTransaction,

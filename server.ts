@@ -564,9 +564,16 @@ setInterval(() => {
 }, 20 * 1000);
 
 async function start() {
-  // 1. Comprehensive CORS Configuration for downloaded web app, remote devices, and mobile terminals
+  // 1. Comprehensive CORS Configuration for downloaded web app, remote devices, and credentialed PWA manifest
   app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+      res.header('Vary', 'Origin');
+    } else {
+      res.header('Access-Control-Allow-Origin', '*');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-device-id');
     if (req.method === 'OPTIONS') {
@@ -595,8 +602,8 @@ async function start() {
   // PWA Manifest with explicit application/manifest+json MIME type
   app.get(['/manifest.json', '/manifest.webmanifest'], (_req, res) => {
     const manifestPath = path.resolve(process.cwd(), 'public', 'manifest.json');
-    res.setHeader('Content-Type', 'application/manifest+json');
-    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, max-age=0');
     return res.sendFile(manifestPath);
   });
 
@@ -695,205 +702,7 @@ async function start() {
     checkAndAutoExpireSubscriptions();
   }, 5 * 60 * 1000);
 
-  // Active Mart Password storage on server
-  let activeMartPasswordServer = 'MART-7860-9921-3KT3';
-  const FIXED_OWNER_PASS_SERVER = 'waqas?887711';
-
-  // 0A. SOFTWARE OWNER LOGIN (Fixed Password: "waqas?887711")
-  app.post('/api/auth/owner-login', (req: Request, res: Response) => {
-    const { password } = req.body;
-    if (!password || (password || '').trim() !== FIXED_OWNER_PASS_SERVER) {
-      return res.status(401).json({
-        success: false,
-        message: 'Incorrect Owner Password. Please enter the valid Software Owner password.',
-      });
-    }
-
-    const token = `TOKEN-OWNER-${crypto.randomBytes(16).toString('hex')}`;
-    const userObj = {
-      id: 'USR-OWNER-01',
-      displayName: 'Muhammad Waqas (Owner)',
-      username: 'owner',
-      role: 'SOFTWARE_OWNER',
-      email: 'waqasmart.pos@gmail.com',
-    };
-
-    authDb.sessions[token] = {
-      token,
-      userId: userObj.id,
-      username: userObj.username,
-      role: 'SOFTWARE_OWNER' as any,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
-      ip: req.ip,
-    };
-    persistAuthDb();
-
-    return res.json({
-      success: true,
-      token,
-      role: 'SOFTWARE_OWNER',
-      user: userObj,
-    });
-  });
-
-  // 0B. MART USER LOGIN (Verifies Mart Password)
-  app.post('/api/auth/mart-login', (req: Request, res: Response) => {
-    const { password } = req.body;
-    const clean = (password || '').trim();
-
-    // Check direct match or valid format
-    const isValid = clean && (
-      clean.toUpperCase() === activeMartPasswordServer ||
-      clean.toUpperCase() === 'MART-7860-9921-3KT3' ||
-      clean.toUpperCase().startsWith('MART-')
-    );
-
-    if (!isValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid Mart Password. Please enter the valid password provided by the Software Owner.',
-      });
-    }
-
-    const token = `TOKEN-MART-${crypto.randomBytes(16).toString('hex')}`;
-    const userObj = {
-      id: `USR-MART-${Date.now().toString().slice(-4)}`,
-      displayName: 'Mart Cashier',
-      username: 'cashier',
-      role: 'MART_USER',
-      email: 'cashier@waqasmart.local',
-    };
-
-    authDb.sessions[token] = {
-      token,
-      userId: userObj.id,
-      username: userObj.username,
-      role: 'MART_USER' as any,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
-      ip: req.ip,
-    };
-    persistAuthDb();
-
-    return res.json({
-      success: true,
-      token,
-      role: 'MART_USER',
-      user: userObj,
-    });
-  });
-
-  // 0C. GENERATE & SET MART PASSWORD (OWNER ONLY)
-  app.post('/api/auth/generate-mart-password', (req: Request, res: Response) => {
-    const { password } = req.body;
-    if (password && typeof password === 'string') {
-      activeMartPasswordServer = password.trim().toUpperCase();
-    }
-    return res.json({
-      success: true,
-      password: activeMartPasswordServer,
-      generatedAt: new Date().toISOString(),
-    });
-  });
-
-  // 0D. GET ACTIVE MART PASSWORD (OWNER ONLY)
-  app.get('/api/auth/active-mart-password', (_req: Request, res: Response) => {
-    return res.json({
-      success: true,
-      password: activeMartPasswordServer,
-    });
-  });
-
-
-
-  // 1C. VERIFY ACTIVE SESSION
-  app.post('/api/auth/verify-session', (req: Request, res: Response) => {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-
-    if (token.startsWith('TOKEN-OWNER-')) {
-      return res.json({
-        success: true,
-        valid: true,
-        role: 'SOFTWARE_OWNER',
-        token,
-        user: {
-          id: 'USR-OWNER-01',
-          displayName: 'Muhammad Waqas (Owner)',
-          username: 'owner',
-          role: 'SOFTWARE_OWNER',
-          email: 'waqasmart.pos@gmail.com',
-        },
-      });
-    }
-
-    if (token.startsWith('TOKEN-MART-')) {
-      return res.json({
-        success: true,
-        valid: true,
-        role: 'MART_USER',
-        token,
-        user: {
-          id: 'USR-MART-01',
-          displayName: 'Mart Cashier',
-          username: 'cashier',
-          role: 'MART_USER',
-          email: 'cashier@waqasmart.local',
-        },
-      });
-    }
-
-    const session = getSessionFromReq(req);
-    if (!session) {
-      return res.status(401).json({ success: false, valid: false, message: 'No valid authenticated session.' });
-    }
-
-    const user = authDb.users.find((u) => u.id === session.userId);
-    if (!user) {
-      return res.status(401).json({ success: false, valid: false, message: 'User profile no longer exists.' });
-    }
-
-    let shop: ShopAccount | undefined = undefined;
-    if (session.shopId) {
-      checkAndAutoExpireSubscriptions();
-      shop = subscriptionsDb.shops.find((s) => s.id === session.shopId);
-    }
-
-    return res.json({
-      success: true,
-      valid: true,
-      role: session.role,
-      token: session.token,
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        phone: user.phone,
-        whatsapp: user.whatsapp,
-        role: user.role,
-        shopId: user.shopId,
-        shopName: shop?.shopName,
-        mustChangePasswordOnFirstLogin: !!user.mustChangePasswordOnFirstLogin,
-        createdAt: user.createdAt,
-      },
-      shop,
-      subscriptionStatus: shop?.status,
-    });
-  });
-
-
-
-  // 1G. LOGOUT
-  app.post('/api/auth/logout', (req: Request, res: Response) => {
-    const session = getSessionFromReq(req);
-    if (session) {
-      delete authDb.sessions[session.token];
-      persistAuthDb();
-      recordAuditLog('LOGOUT', session.email || session.username || 'user', session.role, 'User signed out', session.shopId, req.ip);
-    }
-    return res.json({ success: true, message: 'Logged out successfully.' });
-  });
+  // Legacy /api/auth/* endpoints removed; app uses offline single-password device lock.
 
 
 

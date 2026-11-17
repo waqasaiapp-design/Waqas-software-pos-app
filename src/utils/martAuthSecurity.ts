@@ -1,68 +1,73 @@
 /**
- * WAQAS POS SOFTWARE - Software Owner & Offline Mart Password Security Engine
+ * WAQAS POS SOFTWARE - Offline Single Password Lock Engine
  *
- * Requirements:
- * 1. Fixed Software Owner Password: "waqas?887711"
- * 2. Self-contained offline Mart Password generation & cryptographic signature verification
- * 3. Works 100% offline on any disconnected device (Device B, C, etc.) without server or Device A's storage
- * 4. Session persistence across page refreshes and browser restarts
- * 5. Clean permission boundary: Owner has full access; Mart User cannot access Owner-only security
+ * Security & Persistence Guarantees:
+ * 1. Verifies the initial unlock password using a salted SHA-256 digest (no plaintext password stored in source code or localStorage).
+ * 2. Works 100% offline with zero network, Google, Firebase, or server auth dependencies.
+ * 3. Persists an opaque cryptographically signed device unlock token after the first successful unlock so subsequent launches open directly without re-prompting.
+ * 4. Cleans only legacy authentication keys while preserving all business records.
  */
 
-const MART_ROOT_SECRET = 'WAQAS_MART_POS_OFFLINE_SECRET_KEY_v2026_887711';
-const CHARSET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // 32 unambiguous characters (no 0/O/1/I)
-export const FIXED_OWNER_PASSWORD = 'waqas?887711';
-export const DEFAULT_SEED_MART_PASSWORD = 'MART-7860-9921-3KT3';
+const UNLOCK_SALT = 'WAQAS_POS_UNLOCK_SALT_v1_2026_9F4A';
+const UNLOCK_HASH = '78b925ca903aae3866fc51bd7cc8fbd2b6564520a75a471ec917c8cdde3a2f4c';
+const DEVICE_SIGNING_KEY = 'WAQAS_POS_DEVICE_LOCK_SIGN_KEY_v1_2026_C7E2';
 
-const STORAGE_KEYS = {
-  AUTH_SESSION: 'waqas_mart_auth_session',
-  ACTIVE_MART_PASSWORD: 'waqas_mart_active_password_v2',
-  PASSWORD_HISTORY: 'waqas_mart_password_history_v2',
-};
+export const UNLOCK_STORAGE_KEY = 'waqas_pos_device_unlock_v1';
 
-export interface MartAuthSession {
-  role: 'SOFTWARE_OWNER' | 'MART_USER';
-  user: {
-    id: string;
-    displayName: string;
-    username: string;
-    role: 'SOFTWARE_OWNER' | 'MART_USER';
-    email?: string;
-  };
-  token: string;
-  createdAt: number;
-}
+const LEGACY_AUTH_KEYS = [
+  'waqas_mart_auth_session',
+  'waqas_mart_active_password_v2',
+  'waqas_mart_password_history_v2',
+  'waqas_mart_app_pin_hash_v6',
+];
 
-export interface MartPasswordRecord {
-  password: string;
-  generatedAt: string;
-  generatedBy: string;
-  label?: string;
+export interface DeviceUnlockRecord {
+  version: 1;
+  unlocked: true;
+  unlockedAt: number;
+  deviceNonce: string;
+  signature: string;
 }
 
 /**
- * Fast synchronous SHA-256 for deterministic browser & Node.js offline execution
+ * Standard RFC 6234 synchronous SHA-256 (identical output in Browser, PWA, and Node/tsx)
  */
-function sha256Hex(ascii: string): string {
-  function rightRotate(value: number, amount: number) {
-    return (value >>> amount) | (value << (32 - amount));
+export function sha256Hex(input: string): string {
+  // Encode string to UTF-8 bytes
+  const bytes: number[] = [];
+  for (let i = 0; i < input.length; i++) {
+    let code = input.charCodeAt(i);
+    if (code < 0x80) {
+      bytes.push(code);
+    } else if (code < 0x800) {
+      bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code < 0xd800 || code >= 0xe000) {
+      bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    } else {
+      i++;
+      code = 0x10000 + (((code & 0x3ff) << 10) | (input.charCodeAt(i) & 0x3ff));
+      bytes.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f)
+      );
+    }
   }
 
-  const mathPow = Math.pow;
-  const maxWord = mathPow(2, 32);
-  let i = 0;
-  let j = 0;
-  let result = '';
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while ((bytes.length % 64) !== 56) {
+    bytes.push(0);
+  }
+  const hiBits = Math.floor(bitLen / 0x100000000);
+  const loBits = bitLen >>> 0;
+  bytes.push(
+    (hiBits >>> 24) & 0xff, (hiBits >>> 16) & 0xff, (hiBits >>> 8) & 0xff, hiBits & 0xff,
+    (loBits >>> 24) & 0xff, (loBits >>> 16) & 0xff, (loBits >>> 8) & 0xff, loBits & 0xff
+  );
 
-  const words: number[] = [];
-  const asciiBitLength = ascii.length * 8;
-
-  let hash = [
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-  ];
-
-  const k = [
+  const K = new Uint32Array([
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -71,215 +76,129 @@ function sha256Hex(ascii: string): string {
     0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-  ];
+  ]);
 
-  let compositeHash: number[];
+  const H = new Uint32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ]);
 
-  for (i = 0; i < ascii.length; i++) {
-    j = ascii.charCodeAt(i);
-    words[i >> 2] |= j << ((3 - (i % 4)) * 8);
-  }
+  const rotr = (v: number, n: number) => (v >>> n) | (v << (32 - n));
+  const w = new Uint32Array(64);
 
-  words[asciiBitLength >> 5] |= 0x80 << (24 - (asciiBitLength % 32));
-  words[(((asciiBitLength + 64) >> 9) << 4) + 15] = asciiBitLength;
-
-  for (i = 0; i < words.length; i += 16) {
-    const w = words.slice(i, i + 16);
-    compositeHash = hash.slice(0);
-
-    for (j = 0; j < 64; j++) {
-      const w15 = w[j - 15];
-      const w2 = w[j - 2];
-
-      const s0 = rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3);
-      const s1 = rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10);
-
-      w[j] = j < 16 ? w[j] : (w[j - 16] + s0 + w[j - 7] + s1) | 0;
-
-      const ch = (compositeHash[4] & compositeHash[5]) ^ (~compositeHash[4] & compositeHash[6]);
-      const maj = (compositeHash[0] & compositeHash[1]) ^ (compositeHash[0] & compositeHash[2]) ^ (compositeHash[1] & compositeHash[2]);
-      const temp1 = compositeHash[7] + (rightRotate(compositeHash[4], 6) ^ rightRotate(compositeHash[4], 11) ^ rightRotate(compositeHash[4], 25)) + ch + k[j] + (w[j] | 0);
-      const temp2 = (rightRotate(compositeHash[0], 2) ^ rightRotate(compositeHash[0], 13) ^ rightRotate(compositeHash[0], 22)) + maj;
-
-      compositeHash = [(temp1 + temp2) | 0].concat(compositeHash);
-      compositeHash[4] = (compositeHash[4] + temp1) | 0;
-      compositeHash.length = 8;
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    for (let i = 0; i < 16; i++) {
+      const j = offset + i * 4;
+      w[i] = ((bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]) >>> 0;
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
     }
 
-    for (j = 0; j < 8; j++) {
-      hash[j] = (hash[j] + compositeHash[j]) | 0;
+    let a = H[0], b = H[1], c = H[2], d = H[3];
+    let e = H[4], f = H[5], g = H[6], h = H[7];
+
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
     }
+
+    H[0] = (H[0] + a) >>> 0;
+    H[1] = (H[1] + b) >>> 0;
+    H[2] = (H[2] + c) >>> 0;
+    H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0;
+    H[5] = (H[5] + f) >>> 0;
+    H[6] = (H[6] + g) >>> 0;
+    H[7] = (H[7] + h) >>> 0;
   }
 
-  for (i = 0; i < 8; i++) {
-    for (j = 3; j + 1; j--) {
-      const b = (hash[i] >> (j * 8)) & 255;
-      result += (b < 16 ? '0' : '') + b.toString(16);
-    }
-  }
-
-  return result;
+  return Array.from(H, (val) => val.toString(16).padStart(8, '0')).join('');
 }
 
-/**
- * Compute the 4-character cryptographic signature of a core token
- */
-export function computeMartChecksum(core: string): string {
-  const cleanCore = core.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const h = sha256Hex(`${MART_ROOT_SECRET}:${cleanCore}`);
-  let sig = '';
-  for (let i = 0; i < 4; i++) {
-    const byteVal = parseInt(h.substr(i * 2, 2), 16) || 0;
-    sig += CHARSET[byteVal % CHARSET.length];
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
-  return sig;
+  return diff === 0;
 }
 
-/**
- * Generate a strong random Mart Password with self-contained cryptographic signature
- * Format: MART-XXXX-YYYY-ZZZZ (where ZZZZ is the cryptographic verification signature)
- */
-export function generateStrongMartPassword(): string {
-  let raw = '';
-  for (let i = 0; i < 8; i++) {
-    const randIndex = Math.floor(Math.random() * CHARSET.length);
-    raw += CHARSET[randIndex];
-  }
-  const part1 = raw.slice(0, 4);
-  const part2 = raw.slice(4, 8);
-  const core = `${part1}-${part2}`;
-  const sig = computeMartChecksum(core);
-
-  return `MART-${part1}-${part2}-${sig}`;
-}
-
-/**
- * Normalize user input string for flexible and error-tolerant cashier entry
- */
-export function normalizePasswordInput(raw: string): string {
-  if (!raw) return '';
-  return raw.trim();
-}
-
-/**
- * Verify Software Owner Password
- * Fixed password: "waqas?887711"
- */
-export function verifyOwnerPassword(password: string): boolean {
-  if (!password) return false;
-  return password.trim() === FIXED_OWNER_PASSWORD;
-}
-
-/**
- * Verify Mart Password offline on ANY device without contacting Device A
- * Checks:
- * 1. Self-contained cryptographic signature (verifies on disconnected devices B, C...)
- * 2. Or matches active password in localStorage
- * 3. Or matches default seed password
- */
-export function verifyMartPassword(passwordInput: string): { isValid: boolean; reason?: string } {
-  if (!passwordInput) {
-    return { isValid: false, reason: 'Please enter the Mart Password.' };
-  }
-
-  const clean = passwordInput.trim().toUpperCase().replace(/[\s_]/g, '');
-
-  // 1. Check direct match with active password stored on this device
-  const active = getActiveMartPassword();
-  if (active) {
-    const cleanActive = active.trim().toUpperCase().replace(/[\s_]/g, '');
-    if (clean === cleanActive) {
-      return { isValid: true };
-    }
-  }
-
-  // 2. Check default seed password
-  if (clean === DEFAULT_SEED_MART_PASSWORD.replace(/[\s_]/g, '')) {
-    return { isValid: true };
-  }
-
-  // 3. Cryptographic Offline Self-Contained Verification
-  // Handles: MART-XXXX-YYYY-ZZZZ or XXXX-YYYY-ZZZZ or MARTXXXXYYYYZZZZ
-  let core = '';
-  let providedSig = '';
-
-  if (clean.startsWith('MART-')) {
-    const parts = clean.split('-').filter(Boolean);
-    if (parts.length === 4) {
-      // MART - XXXX - YYYY - ZZZZ
-      core = `${parts[1]}-${parts[2]}`;
-      providedSig = parts[3];
-    }
-  } else if (clean.startsWith('MART')) {
-    const withoutPrefix = clean.replace('MART', '').replace(/-/g, '');
-    if (withoutPrefix.length === 12) {
-      const p1 = withoutPrefix.slice(0, 4);
-      const p2 = withoutPrefix.slice(4, 8);
-      core = `${p1}-${p2}`;
-      providedSig = withoutPrefix.slice(8, 12);
-    }
-  } else {
-    // Input without MART prefix e.g. XXXX-YYYY-ZZZZ
-    const stripped = clean.replace(/-/g, '');
-    if (stripped.length === 12) {
-      const p1 = stripped.slice(0, 4);
-      const p2 = stripped.slice(4, 8);
-      core = `${p1}-${p2}`;
-      providedSig = stripped.slice(8, 12);
-    }
-  }
-
-  if (core && providedSig) {
-    const expectedSig = computeMartChecksum(core);
-    if (expectedSig === providedSig) {
-      return { isValid: true };
-    }
-  }
-
-  return {
-    isValid: false,
-    reason: 'Invalid Mart Password. Please enter the valid password provided by the Software Owner.',
-  };
-}
-
-/**
- * Get active Mart Password stored in localStorage
- */
-export function getActiveMartPassword(): string {
+function generateRandomNonce(): string {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_MART_PASSWORD);
-      if (saved) return saved;
+    if (typeof globalThis !== 'undefined' && globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
     }
   } catch {}
-  return DEFAULT_SEED_MART_PASSWORD;
+  return sha256Hex(`${Date.now()}-${Math.random()}-${Math.random()}`).slice(0, 32);
+}
+
+function computeDeviceUnlockSignature(deviceNonce: string, unlockedAt: number): string {
+  return sha256Hex(`${DEVICE_SIGNING_KEY}:${deviceNonce}:${unlockedAt}`);
 }
 
 /**
- * Save new active Mart Password (Software Owner Only)
+ * Clean up legacy login/password keys without touching any POS business records.
  */
-export function saveActiveMartPassword(password: string): MartPasswordRecord {
-  const record: MartPasswordRecord = {
-    password,
-    generatedAt: new Date().toISOString(),
-    generatedBy: 'Software Owner',
+export function cleanupLegacyAuthStorage(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      for (const key of LEGACY_AUTH_KEYS) {
+        window.localStorage.removeItem(key);
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Verify password offline against the embedded salted SHA-256 hash.
+ */
+export function verifyAppUnlockPassword(passwordInput: string): boolean {
+  if (typeof passwordInput !== 'string' || passwordInput.length === 0) {
+    return false;
+  }
+  const digest = sha256Hex(`${UNLOCK_SALT}:${passwordInput}`);
+  return constantTimeEqual(digest, UNLOCK_HASH);
+}
+
+/**
+ * Persist cryptographically signed unlock state on this device (no plaintext password stored).
+ */
+export function saveUnlockedState(): DeviceUnlockRecord {
+  const unlockedAt = Date.now();
+  const deviceNonce = generateRandomNonce();
+  const signature = computeDeviceUnlockSignature(deviceNonce, unlockedAt);
+
+  const record: DeviceUnlockRecord = {
+    version: 1,
+    unlocked: true,
+    unlockedAt,
+    deviceNonce,
+    signature,
   };
 
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_MART_PASSWORD, password);
-
-      // Append to history
-      const historyRaw = localStorage.getItem(STORAGE_KEYS.PASSWORD_HISTORY);
-      let history: MartPasswordRecord[] = [];
-      if (historyRaw) {
-        try {
-          history = JSON.parse(historyRaw);
-          if (!Array.isArray(history)) history = [];
-        } catch {}
-      }
-      history.unshift(record);
-      localStorage.setItem(STORAGE_KEYS.PASSWORD_HISTORY, JSON.stringify(history.slice(0, 20)));
+      cleanupLegacyAuthStorage();
+      window.localStorage.setItem(UNLOCK_STORAGE_KEY, JSON.stringify(record));
     }
   } catch {}
 
@@ -287,55 +206,54 @@ export function saveActiveMartPassword(password: string): MartPasswordRecord {
 }
 
 /**
- * Get active session
+ * Check whether this device has already completed initial password unlock.
  */
-export function getAuthSession(): MartAuthSession | null {
+export function isAppUnlocked(): boolean {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const raw = localStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (parsed && (parsed.role === 'SOFTWARE_OWNER' || parsed.role === 'MART_USER')) {
-        return parsed;
-      }
-      // Backward compatibility check for old format
-      if (parsed && (parsed.user?.role === 'SHOP_OWNER' || parsed.user?.role === 'STAFF')) {
-        return {
-          role: 'MART_USER',
-          user: {
-            id: parsed.user.id || 'USR-MART-01',
-            displayName: parsed.user.fullName || parsed.user.displayName || 'Mart User',
-            username: parsed.user.username || 'cashier',
-            role: 'MART_USER',
-            email: parsed.user.email,
-          },
-          token: parsed.token || `TOKEN-MART-${Date.now()}`,
-          createdAt: Date.now(),
-        };
-      }
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return false;
     }
-  } catch {}
-  return null;
+    const raw = window.localStorage.getItem(UNLOCK_STORAGE_KEY);
+    if (!raw) return false;
+
+    const parsed = JSON.parse(raw) as Partial<DeviceUnlockRecord>;
+    if (
+      !parsed ||
+      parsed.version !== 1 ||
+      parsed.unlocked !== true ||
+      typeof parsed.unlockedAt !== 'number' ||
+      typeof parsed.deviceNonce !== 'string' ||
+      parsed.deviceNonce.length < 16 ||
+      typeof parsed.signature !== 'string'
+    ) {
+      return false;
+    }
+
+    const expectedSignature = computeDeviceUnlockSignature(parsed.deviceNonce, parsed.unlockedAt);
+    return constantTimeEqual(parsed.signature, expectedSignature);
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Save active session to localStorage (Persists across navigation, refresh, restart)
+ * Unlock application with password verification (100% offline).
  */
-export function setAuthSession(session: MartAuthSession): void {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      localStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(session));
-    }
-  } catch {}
-}
+export function unlockWithPassword(passwordInput: string): { success: boolean; error?: string } {
+  if (!passwordInput || passwordInput.length === 0) {
+    return {
+      success: false,
+      error: 'Please enter the application password.',
+    };
+  }
 
-/**
- * Clear session upon explicit logout
- */
-export function clearAuthSession(): void {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      localStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
-    }
-  } catch {}
+  if (!verifyAppUnlockPassword(passwordInput)) {
+    return {
+      success: false,
+      error: 'Incorrect password. Access denied.',
+    };
+  }
+
+  saveUnlockedState();
+  return { success: true };
 }

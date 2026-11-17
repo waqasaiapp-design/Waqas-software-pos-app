@@ -101,18 +101,14 @@ import { ResetSystemModal } from './components/ResetSystemModal';
 import { SupplierLedgersPage } from './components/SupplierLedgersPage';
 import { ExpensesPage } from './components/ExpensesPage';
 import { PurchaseReturnsPage } from './components/PurchaseReturnsPage';
-import { SecuritySettingsPage } from './components/SecuritySettingsPage';
 import { CctvPage } from './components/CctvPage';
 import { AllStaffPage } from './components/AllStaffPage';
 import { LoginGateway } from './components/Auth/LoginGateway';
-import { GenerateMartPasswordModal } from './components/GenerateMartPasswordModal';
 import {
-  getAuthSession,
-  clearAuthSession,
-  MartAuthSession,
+  isAppUnlocked,
+  cleanupLegacyAuthStorage,
 } from './utils/martAuthSecurity';
 import { AuthUser, ShopAccount, UserRole } from './types/pos';
-import { safeFetchJson } from './utils/apiClient';
 
 const STORAGE_KEYS = {
   INVENTORY: 'waqas_mart_inventory_v6',
@@ -153,55 +149,17 @@ try {
 } catch {}
 
 export default function App() {
-  // Software Owner & Mart User Authentication Session (100% Offline & Session Persistent)
-  const [authSession, setAuthSessionState] = useState<MartAuthSession | null>(() => getAuthSession());
-  const [isGenerateMartPasswordOpen, setIsGenerateMartPasswordOpen] = useState(false);
-
-  const isOwner = authSession?.role === 'SOFTWARE_OWNER';
+  // Single Offline Device Password Unlock State (persisted on device after first unlock)
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(() => {
+    cleanupLegacyAuthStorage();
+    return isAppUnlocked();
+  });
 
   // Navigation: 'Home' | 'Sale POS' | 'Purchase Entry' | 'Total Stock' | etc.
   const [activeNav, setActiveNav] = useState<string>('Home');
 
-  // Verify active session on startup with backend if online (keeps offline session if disconnected)
-  useEffect(() => {
-    const checkSession = async () => {
-      const saved = getAuthSession();
-      if (!saved || !saved.token) return;
-      try {
-        const res = await safeFetchJson('/api/auth/verify-session', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${saved.token}`,
-          },
-        });
-        const data = res.data;
-        if (data && data.success && data.valid) {
-          // Valid server session
-        }
-      } catch {
-        // Disconnected or offline: keep local authenticated session
-      }
-    };
-    checkSession();
-  }, []);
-
-  const handleLoginSuccess = (session: MartAuthSession) => {
-    setAuthSessionState(session);
-    syncService.setSessionToken(session.token);
-    setActiveNav('Home');
-  };
-
-  const handleLogout = async () => {
-    if (authSession?.token) {
-      try {
-        await safeFetchJson('/api/auth/logout', {
-          method: 'POST',
-        });
-      } catch {}
-    }
-    clearAuthSession();
-    syncService.setSessionToken('');
-    setAuthSessionState(null);
+  const handleUnlockSuccess = () => {
+    setIsUnlocked(true);
     setActiveNav('Home');
   };
   const [mode, setMode] = useState<POSMode>('sale');
@@ -707,29 +665,6 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
-
-  // App PIN Lock & Security
-  const [pinHash, setPinHash] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEYS.PIN_HASH);
-    } catch {}
-    return null;
-  });
-
-  useEffect(() => {
-    try {
-      if (pinHash) {
-        localStorage.setItem(STORAGE_KEYS.PIN_HASH, pinHash);
-      } else {
-        localStorage.removeItem(STORAGE_KEYS.PIN_HASH);
-      }
-    } catch (e) {
-      console.warn('Failed to persist pin hash', e);
-    }
-  }, [pinHash]);
-
-  const [isLocked, setIsLocked] = useState<boolean>(false);
-  const [isLockConfigOpen, setIsLockConfigOpen] = useState<boolean>(false);
 
   // Store Branding & Theme Configuration
   const [branding, setBranding] = useState<StoreBranding>(() => {
@@ -1890,13 +1825,6 @@ export default function App() {
       setActiveNav('All Staff');
     } else if (page === 'CCTV' || page === 'Cameras') {
       setActiveNav('CCTV');
-    } else if (page === 'Security Settings' || page === 'Security & App Lock' || page === 'Security' || page === 'Generate Mart Password') {
-      if (isOwner) {
-        setIsGenerateMartPasswordOpen(true);
-      } else {
-        showToast('Only Software Owner can generate Mart Passwords.', 'info');
-      }
-      setActiveNav('Security Settings');
     } else if (page === 'Reports' || page === 'Sale Summary') {
       setActiveNav('Sale Summary');
     } else if (page === 'Total Stock' || page === 'Products' || page === 'Stock') {
@@ -1930,15 +1858,14 @@ export default function App() {
     { id: 'Purchase Returns', label: 'Purchase Returns', icon: Undo },
     { id: 'All Staff', label: 'All Staff', icon: UserCheck },
     { id: 'CCTV', label: 'CCTV Cameras', icon: Camera },
-    ...(isOwner ? [{ id: 'Security Settings', label: 'Security & Mart Password', icon: Shield }] : []),
     { id: 'Reports', label: 'Reports', icon: TrendingUp },
     { id: 'Device Management', label: 'Device Management', icon: Smartphone },
     { id: 'Settings', label: 'Settings', icon: Settings },
   ];
 
-  // 1. Unauthenticated Login Gateway (Software Owner & Mart User options only)
-  if (!authSession) {
-    return <LoginGateway onLoginSuccess={handleLoginSuccess} />;
+  // Single Password Lock Screen on first application launch
+  if (!isUnlocked) {
+    return <LoginGateway onUnlockSuccess={handleUnlockSuccess} deferredPrompt={deferredPrompt} />;
   }
 
   const isHomePage = activeNav === 'Home';
@@ -2099,13 +2026,6 @@ export default function App() {
             onOpenAddProduct={() => setIsAddProductOpen(true)}
             onOpenHistory={() => setIsHistoryOpen(true)}
             onOpenSettings={() => setIsSettingsOpen(true)}
-            onLockApp={() => {
-              if (pinHash) {
-                setIsLocked(true);
-              } else {
-                setIsLockConfigOpen(true);
-              }
-            }}
             onNavigate={handleNavigate}
             onViewReceipt={(tx) => {
               setCurrentTransaction(tx);
@@ -2228,12 +2148,6 @@ export default function App() {
             onSaveDvrConfig={handleSaveDvrConfig}
             onBackToHome={() => setActiveNav('Home')}
           />
-        ) : activeNav === 'Security Settings' || activeNav === 'Security' || activeNav === 'Generate Mart Password' ? (
-          /* PAGE 20: SECURITY SETTINGS & MART PASSWORD GENERATION (OWNER ONLY) */
-          <SecuritySettingsPage
-            isOwner={isOwner}
-            onBackToHome={() => setActiveNav('Home')}
-          />
         ) : (
           /* PAGE 1 & DEFAULT: ULTRA-MODERN HOME DASHBOARD + 16 ACTION TILES */
           <HomePage
@@ -2266,15 +2180,8 @@ export default function App() {
             }}
             onOpenReceiptDesigner={() => setIsReceiptDesignerOpen(true)}
             onOpenResetSystem={() => setIsResetSystemOpen(true)}
-            onLogout={handleLogout}
-            authRole={isOwner ? 'Software Owner' : 'Mart User'}
-            authEmail={authSession?.user?.email}
+            deferredPrompt={deferredPrompt}
             shopId={branding.terminalDeviceId || 'WM-001'}
-            onLockApp={() => {
-              if (isOwner) {
-                setIsGenerateMartPasswordOpen(true);
-              }
-            }}
           />
         )}
       </main>
@@ -2347,7 +2254,7 @@ export default function App() {
             type="button"
             onClick={() => setIsSettingsOpen(true)}
             className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] py-1 transition-colors cursor-pointer ${
-              isSettingsOpen || activeNav === 'Settings' || activeNav === 'Security Settings'
+              isSettingsOpen || activeNav === 'Settings'
                 ? 'text-blue-600 font-black'
                 : 'text-slate-400 hover:text-slate-700 font-semibold'
             }`}
@@ -2543,17 +2450,6 @@ export default function App() {
           onOpenPairQr={() => {
             setIsRevoked(false);
             setIsPairModalOpen(true);
-          }}
-        />
-      )}
-
-      {/* Generate Mart Password Modal (Owner Only) */}
-      {isOwner && (
-        <GenerateMartPasswordModal
-          isOpen={isGenerateMartPasswordOpen}
-          onClose={() => setIsGenerateMartPasswordOpen(false)}
-          onPasswordGenerated={() => {
-            showToast('New Mart Password generated and activated!', 'success');
           }}
         />
       )}
